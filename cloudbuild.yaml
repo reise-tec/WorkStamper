@@ -1,0 +1,27 @@
+steps:
+# ステップ1: コンテナをビルドしてArtifact Registryにプッシュする
+- name: 'gcr.io/cloud-builders/gcloud'
+  args:
+    - 'builds'
+    - 'submit'
+    - '--tag'
+    - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/workstamper-repo/workstamper:latest'
+    - '.'
+
+# ステップ2: ビルドしたコンテナをCloud Runにデプロイする
+- name: 'gcr.io/cloud-builders/gcloud'
+  args:
+    - 'run'
+    - 'deploy'
+    - 'workstamper' # あなたのCloud Runサービス名
+    - '--image'
+    - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/workstamper-repo/workstamper:latest'
+    - '--region'
+    - 'asia-northeast1'
+    - '--platform'
+    - 'managed'
+    - '--allow-unauthenticated'
+
+# デプロイ完了を待つ設定
+options:
+  logging: CLOUD_LOGGING_ONLY
