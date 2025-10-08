@@ -6,3 +6,5 @@ google-auth-oauthlib
 requests
 gunicorn
 uvicorn
+Flask
+tinydb
