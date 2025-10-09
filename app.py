@@ -185,6 +185,25 @@ def get_employee_id_wrapper(user_id, client):
 # Slackコマンドハンドラー
 # ----------------------------------------------------
 
+@app.command("/連携")
+def handle_auth_command(ack, body, client):
+    """ユーザーにfreeeとの連携を促す"""
+    ack()
+    user_id = body["user_id"]
+    
+    # stateパラメータでSlackユーザーIDを渡す
+    state = user_id
+    auth_url = (f"https://accounts.secure.freee.co.jp/public_api/authorize"
+                f"?client_id={FREEEE_CLIENT_ID}"
+                f"&redirect_uri={FREEEE_REDIRECT_URI}"
+                f"&response_type=code"
+                f"&state={state}")
+
+    client.chat_postMessage(
+        channel=user_id,
+        text=f"WorkStamperとfreeeアカウントを連携してください。\n{auth_url}"
+    )
+
 @app.command("/出勤")
 def handle_clock_in_command(ack, body, client):
     ack()
