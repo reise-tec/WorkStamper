@@ -43,7 +43,7 @@ GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 flask_app = Flask(__name__)
 handler = SlackRequestHandler(app)
-db = TinyDB('user_tokens.json') # ★★★ データベースを初期化 ★★★
+db = TinyDB('user_tokens.json')
 UserToken = Query()
 
 # ----------------------------------------------------
@@ -51,6 +51,7 @@ UserToken = Query()
 # ----------------------------------------------------
 
 def get_google_credentials():
+    """リフレッシュトークンを使ってGoogle APIの認証情報を生成・更新する"""
     creds = Credentials.from_authorized_user_info(
         info={"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "refresh_token": GOOGLE_REFRESH_TOKEN},
         scopes=['https://www.googleapis.com/auth/calendar']
@@ -61,6 +62,7 @@ def get_google_credentials():
     return creds
 
 def get_freee_token(slack_user_id):
+    """DBからユーザーのfreeeトークンを取得し、必要なら更新する"""
     user_data = db.get(UserToken.slack_user_id == slack_user_id)
     if not user_data: return None
     expiry_time = datetime.datetime.fromtimestamp(user_data.get('created_at', 0) + user_data.get('expires_in', 0))
@@ -76,18 +78,19 @@ def get_freee_token(slack_user_id):
             response.raise_for_status()
             new_token_data = response.json()
             db.update(new_token_data, UserToken.slack_user_id == slack_user_id)
-            return new_token_data['access_token']
+            return new_token_data.get('access_token')
         except requests.exceptions.RequestException as e:
             logging.error(f"freeeトークンのリフレッシュに失敗: {e}")
             return None
     else:
-        return user_data['access_token']
+        return user_data.get('access_token')
 
 # ----------------------------------------------------
 # API連携ヘルパー関数 (access_tokenを引数に取る)
 # ----------------------------------------------------
 
 def get_email_from_slack(user_id, client):
+    """SlackのユーザーIDからメールアドレスを取得"""
     try:
         result = client.users_info(user=user_id)
         return result["user"]["profile"]["email"]
@@ -96,6 +99,7 @@ def get_email_from_slack(user_id, client):
         return None
 
 def get_freee_employee_id_by_email(email, access_token):
+    """メールアドレスからfreeeの従業員IDを取得"""
     url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/employees"
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {"email": email}
@@ -103,13 +107,14 @@ def get_freee_employee_id_by_email(email, access_token):
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
         employees = response.json()
-        if employees: return employees[0]["id"]
+        if employees: return employees[0].get("id")
         return None
     except requests.exceptions.RequestException as e:
         logging.error(f"freee従業員検索エラー: {e}")
         return None
 
 def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
+    """freeeに打刻データを送信"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/time_clocks"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     now = datetime.datetime.now()
@@ -124,6 +129,7 @@ def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
         return False
 
 def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
+    """freeeの勤怠タグを更新する"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/{date}"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     try:
@@ -140,6 +146,7 @@ def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
         return False
 
 def get_freee_leave_types(employee_id, access_token):
+    """freeeから従業員が利用可能な休暇種別の一覧を取得する"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/templates"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
@@ -152,6 +159,7 @@ def get_freee_leave_types(employee_id, access_token):
         return None
 
 def submit_freee_leave_request(employee_id, leave_type_id, start_date, end_date, access_token):
+    """freeeに休暇申請を送信（勤務記録を更新）"""
     current_date = datetime.datetime.strptime(start_date, '%Y-%m-%d').date()
     end_date_obj = datetime.datetime.strptime(end_date, '%Y-%m-%d').date()
     while current_date <= end_date_obj:
@@ -172,6 +180,7 @@ def submit_freee_leave_request(employee_id, leave_type_id, start_date, end_date,
 # 共通ヘルパー
 # ----------------------------------------------------
 def get_employee_id_from_slack_id(user_id, client, access_token):
+    """アクセストークンを使い、SlackのユーザーIDからfreee従業員IDを取得"""
     email = get_email_from_slack(user_id, client)
     if not email:
         client.chat_postMessage(channel=user_id, text="エラー: Slackメールアドレス取得不可")
@@ -221,6 +230,7 @@ def handle_clock_out_command(ack, body, client):
     if not access_token:
         client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
         return
+        
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
     if employee_id and call_freee_time_clock(employee_id, "clock_out", access_token):
         client.chat_postMessage(channel=user_id, text="退勤打刻が完了しました。お疲れ様でした！")
@@ -236,6 +246,7 @@ def handle_applications_command(ack, body, client):
     if not access_token:
         client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
         return
+        
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
     if not employee_id: return
 
@@ -351,7 +362,6 @@ def oauth_callback():
 
     if "access_token" in token_data:
         token_data['slack_user_id'] = slack_user_id
-        # created_atはUnixタイムスタンプなのでそのまま保存
         db.upsert(token_data, UserToken.slack_user_id == slack_user_id)
         app.client.chat_postMessage(channel=slack_user_id, text="freeeとの連携が完了しました！")
         return "連携が完了しました。このウィンドウを閉じてください。"
@@ -360,10 +370,8 @@ def oauth_callback():
         return "エラーが発生しました。連携に失敗しました。", 500
 
 # ローカルでの開発用にSocket Modeで起動するためのコード
-# このファイルが直接実行された場合のみ、SocketModeで起動
-# gunicornで起動される本番環境では、この部分は実行されない
 if __name__ == "__main__":
-    SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
     from slack_bolt.adapter.socket_mode import SocketModeHandler
+    SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
     logging.info("🤖 WorkStamper is running in Socket Mode!")
     SocketModeHandler(app, SLACK_APP_TOKEN).start()
