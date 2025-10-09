@@ -32,12 +32,15 @@ logging.basicConfig(level=logging.INFO)
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
-FREEEE_API_TOKEN = os.environ.get("FREEEE_API_TOKEN")
 FREEEE_COMPANY_ID = os.environ.get("FREEEE_COMPANY_ID")
+
+# ★★★ freee OAuth 2.0用の変数を追加 ★★★
+FREEEE_CLIENT_ID = os.environ.get("FREEEE_CLIENT_ID")
+FREEEE_CLIENT_SECRET = os.environ.get("FREEEE_CLIENT_SECRET")
+FREEEE_REDIRECT_URI = os.environ.get("FREEEE_REDIRECT_URI")
+
 GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 
 # アプリの初期化
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
