@@ -7,7 +7,7 @@ import time
 from dotenv import load_dotenv
 
 # Slack
-from slack_bolt import App
+from slack_bolt import App, Ack
 from slack_bolt.adapter.flask import SlackRequestHandler
 from slack_sdk.errors import SlackApiError
 
@@ -49,6 +49,26 @@ UserToken = Query()
 # ----------------------------------------------------
 # 認証ヘルパー関数
 # ----------------------------------------------------
+
+def open_application_modal(client, body):
+    """モーダルを開く実際の処理"""
+    user_id = body["user_id"]
+    
+    # この関数の中で時間のかかる処理を行う
+    access_token = get_freee_token(user_id)
+    if not access_token:
+        client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
+        return
+        
+    employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
+    if not employee_id: return
+
+    view_private_metadata = {"employee_id": employee_id}
+    
+    client.views_open(
+        trigger_id=body["trigger_id"],
+        view={"type": "modal", "private_metadata": json.dumps(view_private_metadata), "callback_id": "select_application_type_view", "title": {"type": "plain_text", "text": "各種申請"}, "submit": {"type": "plain_text", "text": "次へ"}, "blocks": [{"type": "input", "block_id": "application_type_block", "label": {"type": "plain_text", "text": "申請種別"}, "element": {"type": "static_select", "action_id": "application_type_select", "placeholder": {"type": "plain_text", "text": "申請の種類を選択"}, "options": [{"text": {"type": "plain_text", "text": "有給休暇・特別休暇・欠勤"}, "value": "leave_request"}, {"text": {"type": "plain_text", "text": "勤怠時間修正"}, "value": "time_correction"}]}}]}
+    )
 
 def get_google_credentials():
     """リフレッシュトークンを使ってGoogle APIの認証情報を生成・更新する"""
@@ -244,19 +264,22 @@ def handle_clock_out_command(ack, body, client):
 
 
 @app.command("/各種申請")
-def handle_applications_command(ack, body, client):
-    ack()
+def handle_applications_command(ack: Ack, body: dict, client, logger):
+    """/各種申請 コマンドを受け取り、重い処理を遅延実行する"""
     user_id = body["user_id"]
-    if not pre_check_authentication(user_id, client): return
-    access_token = get_freee_token(user_id)
-    if not access_token:
-        client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
+    # 認証チェックだけを先に行う
+    if not pre_check_authentication(user_id, client):
+        ack()
         return
-    employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
-    if not employee_id: return
 
-    view_private_metadata = {"employee_id": employee_id}
-    client.views_open(trigger_id=body["trigger_id"], view={"type": "modal", "private_metadata": json.dumps(view_private_metadata), "callback_id": "select_application_type_view", "title": {"type": "plain_text", "text": "各種申請"}, "submit": {"type": "plain_text", "text": "次へ"}, "blocks": [{"type": "input", "block_id": "application_type_block", "label": {"type": "plain_text", "text": "申請種別"}, "element": {"type": "static_select", "action_id": "application_type_select", "placeholder": {"type": "plain_text", "text": "申請の種類を選択"}, "options": [{"text": {"type": "plain_text", "text": "有給休暇・特別休暇・欠勤"}, "value": "leave_request"}, {"text": {"type": "plain_text", "text": "勤怠時間修正"}, "value": "time_correction"}]}}]})
+    # 3秒以内にack()を返す
+    ack()
+    
+    # 時間のかかる処理をバックグラウンドで実行
+    try:
+        open_application_modal(client, body)
+    except Exception as e:
+        logger.error(f"モーダルを開く際にエラーが発生しました: {e}")
 
 # ----------------------------------------------------
 # Slackモーダルハンドラー
