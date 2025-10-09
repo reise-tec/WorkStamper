@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 8080
 
 # 7. コンテナが起動したときに実行するコマンド
-CMD ["gunicorn", "app:flask_app", "--bind", "0.0.0.0:8080", "--worker-class", "uvicorn.workers.UvicornWorker"]
+CMD ["gunicorn", "app:flask_app", "--bind", "0.0.0.0:8080"]
