@@ -54,7 +54,7 @@ def get_google_credentials():
     """リフレッシュトークンを使ってGoogle APIの認証情報を生成・更新する"""
     creds = Credentials.from_authorized_user_info(
         info={"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "refresh_token": GOOGLE_REFRESH_TOKEN},
-        scopes=['https://www.googleapis.com/auth/calendar']
+        scopes=['https.googleapis.com/auth/calendar']
     )
     if not creds.valid and creds.expired and creds.refresh_token:
         logging.info("Googleの認証情報が期限切れのため、リフレッシュします...")
@@ -90,7 +90,6 @@ def get_freee_token(slack_user_id):
 # ----------------------------------------------------
 
 def get_email_from_slack(user_id, client):
-    """SlackのユーザーIDからメールアドレスを取得"""
     try:
         result = client.users_info(user=user_id)
         return result["user"]["profile"]["email"]
@@ -99,7 +98,6 @@ def get_email_from_slack(user_id, client):
         return None
 
 def get_freee_employee_id_by_email(email, access_token):
-    """メールアドレスからfreeeの従業員IDを取得"""
     url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/employees"
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {"email": email}
@@ -114,7 +112,6 @@ def get_freee_employee_id_by_email(email, access_token):
         return None
 
 def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
-    """freeeに打刻データを送信"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/time_clocks"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     now = datetime.datetime.now()
@@ -129,26 +126,19 @@ def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
         return False
 
 def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
-    """freeeの勤怠タグを更新する（読み取り→修正→書き戻し方式）"""
-    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/{date}"
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    
+    """freeeの勤怠タグを更新する（公式リファレンス準拠）"""
+    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/attendance_tags/{date}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "company_id": int(FREEEE_COMPANY_ID),
+        "employee_attendance_tags": [{"attendance_tag_id": int(tag_id), "amount": 1}]
+    }
     try:
-        # ステップ1: 現在の勤務記録を読み取る
-        get_response = requests.get(url, headers={"Authorization": f"Bearer {access_token}"})
-        get_response.raise_for_status()
-        work_record = get_response.json()
-        
-        # ステップ2: 読み取ったデータに勤怠タグ情報を追加・更新する
-        work_record["employee_attendance_tags"] = [{"attendance_tag_id": int(tag_id), "amount": 1}]
-        
-        # ★★★ 修正点：書き戻すデータにcompany_idを必ず含める ★★★
-        work_record["company_id"] = int(FREEEE_COMPANY_ID)
-
-        # ステップ3: 修正したデータ全体を書き戻す
-        put_response = requests.put(url, headers=headers, json=work_record)
-        put_response.raise_for_status()
-        
+        response = requests.put(url, headers=headers, json=data)
+        response.raise_for_status()
         return True
     except requests.exceptions.RequestException as e:
         logging.error(f"freee勤怠タグ更新エラー: {e.response.text}")
@@ -239,7 +229,6 @@ def handle_clock_out_command(ack, body, client):
     if not access_token:
         client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
         return
-        
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
     if employee_id and call_freee_time_clock(employee_id, "clock_out", access_token):
         client.chat_postMessage(channel=user_id, text="退勤打刻が完了しました。お疲れ様でした！")
@@ -255,7 +244,6 @@ def handle_applications_command(ack, body, client):
     if not access_token:
         client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
         return
-        
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
     if not employee_id: return
 
@@ -285,8 +273,8 @@ def handle_clock_in_submission(ack, body, client, view):
         client.chat_postMessage(channel=user_id, text="エラー: freeeへの打刻処理に失敗しました。")
         return
         
-    logging.info("freee側の処理を3秒待機します...")
-    time.sleep(3)
+    logging.info("freee側の処理を1秒待機します...")
+    time.sleep(1)
         
     today_str = datetime.date.today().isoformat()
     if update_freee_attendance_tag(employee_id, today_str, int(tag_id), access_token):
@@ -313,7 +301,6 @@ def handle_select_application_type(ack, body, client, view):
         callback_id = "submit_leave_request_view"
         leave_types = get_freee_leave_types(employee_id, access_token)
         if leave_types is None:
-            # (エラー処理)
             return
         
         options = [{"text": {"type": "plain_text", "text": leave["name"]}, "value": f"{leave['id']}:{leave['name']}"} for leave in leave_types]
