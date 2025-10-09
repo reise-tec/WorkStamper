@@ -112,7 +112,9 @@ def get_freee_employee_id_by_email(email, access_token):
         return None
 
 def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
+    """freeeに打刻データを送信"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/time_clocks"
+    # ★★★ ここで引数のaccess_tokenを使う ★★★
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     now = datetime.datetime.now()
     data = {"company_id": int(FREEEE_COMPANY_ID), "type": clock_type, "base_date": now.strftime('%Y-%m-%d'), "datetime": now.strftime('%Y-%m-%d %H:%M:%S')}
@@ -225,15 +227,21 @@ def handle_clock_out_command(ack, body, client):
     ack()
     user_id = body["user_id"]
     if not pre_check_authentication(user_id, client): return
+    
+    # ★★★ ユーザーのアクセストークンを取得 ★★★
     access_token = get_freee_token(user_id)
     if not access_token:
         client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
         return
+        
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
+    
+    # ★★★ call_freee_time_clockに関数にaccess_tokenを渡す ★★★
     if employee_id and call_freee_time_clock(employee_id, "clock_out", access_token):
         client.chat_postMessage(channel=user_id, text="退勤打刻が完了しました。お疲れ様でした！")
     else:
         client.chat_postMessage(channel=user_id, text="エラー: freeeへの打刻処理に失敗しました。")
+
 
 @app.command("/各種申請")
 def handle_applications_command(ack, body, client):
