@@ -129,17 +129,26 @@ def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
         return False
 
 def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
-    """freeeの勤怠タグを更新する"""
+    """freeeの勤怠タグを更新する（読み取り→修正→書き戻し方式）"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/{date}"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    
     try:
+        # ステップ1: 現在の勤務記録を読み取る
         get_response = requests.get(url, headers={"Authorization": f"Bearer {access_token}"})
         get_response.raise_for_status()
         work_record = get_response.json()
+        
+        # ステップ2: 読み取ったデータに勤怠タグ情報を追加・更新する
         work_record["employee_attendance_tags"] = [{"attendance_tag_id": int(tag_id), "amount": 1}]
+        
+        # ★★★ 修正点：書き戻すデータにcompany_idを必ず含める ★★★
         work_record["company_id"] = int(FREEEE_COMPANY_ID)
+
+        # ステップ3: 修正したデータ全体を書き戻す
         put_response = requests.put(url, headers=headers, json=work_record)
         put_response.raise_for_status()
+        
         return True
     except requests.exceptions.RequestException as e:
         logging.error(f"freee勤怠タグ更新エラー: {e.response.text}")
