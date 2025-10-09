@@ -309,6 +309,42 @@ def handle_submit_leave_request(ack, body, client, view):
 def slack_events():
     return handler.handle(request)
 
+# ★★★ この関数をまるごと追加 ★★★
+@flask_app.route("/oauth/callback", methods=["GET"])
+def oauth_callback():
+    """freeeからのリダイレクトを受け取り、トークンを取得・保存する"""
+    code = request.args.get("code")
+    slack_user_id = request.args.get("state") # stateからユーザーIDを取得
+    
+    token_url = "https://accounts.secure.freee.co.jp/public_api/token"
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": FREEEE_CLIENT_ID,
+        "client_secret": FREEEE_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": FREEEE_REDIRECT_URI,
+    }
+    
+    try:
+        response = requests.post(token_url, data=payload)
+        response.raise_for_status()
+        token_data = response.json()
+
+        if "access_token" in token_data:
+            # ユーザーIDに紐付けてトークン情報をDBに保存
+            token_data['slack_user_id'] = slack_user_id
+            db.upsert(token_data, UserToken.slack_user_id == slack_user_id)
+            
+            # Slackユーザーに完了通知
+            app.client.chat_postMessage(channel=slack_user_id, text="freeeとの連携が完了しました！")
+            return "連携が完了しました。このウィンドウを閉じてください。"
+        else:
+            logging.error(f"freeeトークン交換失敗 (user: {slack_user_id}): {token_data}")
+            return "エラーが発生しました。連携に失敗しました。", 500
+    except Exception as e:
+        logging.error(f"OAuthコールバック処理エラー: {e}")
+        return "サーバー内部でエラーが発生しました。", 500
+
 # ローカルでの開発用にSocket Modeで起動するためのコード
 if __name__ == "__main__":
     from slack_bolt.adapter.socket_mode import SocketModeHandler
