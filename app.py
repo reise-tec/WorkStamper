@@ -166,9 +166,11 @@ def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
         logging.error(f"freee勤怠タグ更新エラー: {e.response.text}")
         return False
 
-def get_freee_leave_types(employee_id, access_token):
-    """freeeから従業員が利用可能な休暇種別の一覧を取得する"""
-    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/templates"
+def get_freee_leave_types(access_token): # employee_idが不要に
+    """freeeから休暇種別の一覧を取得する"""
+    # ★★★ URLを正しいエンドポイントに修正 ★★★
+    url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/work_record_templates"
+    
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         response = requests.get(url, headers=headers)
@@ -330,7 +332,8 @@ def handle_select_application_type(ack, body, client, view):
 
     if selected_type == "leave_request":
         callback_id = "submit_leave_request_view"
-        leave_types = get_freee_leave_types(employee_id, access_token)
+        # ★★★ employee_idを渡さないように修正 ★★★
+        leave_types = get_freee_leave_types(access_token)
         if leave_types is None:
             return
         
