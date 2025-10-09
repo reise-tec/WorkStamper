@@ -41,9 +41,8 @@ GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 
 # アプリの初期化
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
-flask_app = handler.app
 handler = SlackRequestHandler(app)
-
+flask_app = handler.app
 
 # ----------------------------------------------------
 # 認証ヘルパー関数
