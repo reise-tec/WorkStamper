@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO)
 # --- .envファイルから認証情報を取得 ---
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET") # デプロイ用にSigning Secretが必要
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
 FREEEE_API_TOKEN = os.environ.get("FREEEE_API_TOKEN")
 FREEEE_COMPANY_ID = os.environ.get("FREEEE_COMPANY_ID")
 GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID")
@@ -41,8 +41,9 @@ GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 
 # アプリの初期化
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
+flask_app = Flask(__name__)
 handler = SlackRequestHandler(app)
-flask_app = handler.app
+
 
 # ----------------------------------------------------
 # 認証ヘルパー関数
@@ -202,8 +203,7 @@ def handle_clock_out_command(ack, body, client):
 def handle_applications_command(ack, body, client):
     ack()
     employee_id = get_employee_id_wrapper(body["user_id"], client)
-    if not employee_id:
-        return
+    if not employee_id: return
     view_private_metadata = {"employee_id": employee_id}
     client.views_open(trigger_id=body["trigger_id"], view={"type": "modal", "private_metadata": json.dumps(view_private_metadata), "callback_id": "select_application_type_view", "title": {"type": "plain_text", "text": "各種申請"}, "submit": {"type": "plain_text", "text": "次へ"}, "blocks": [{"type": "input", "block_id": "application_type_block", "label": {"type": "plain_text", "text": "申請種別"}, "element": {"type": "static_select", "action_id": "application_type_select", "placeholder": {"type": "plain_text", "text": "申請の種類を選択"}, "options": [{"text": {"type": "plain_text", "text": "有給休暇・特別休暇・欠勤"}, "value": "leave_request"}, {"text": {"type": "plain_text", "text": "勤怠時間修正"}, "value": "time_correction"}]}}]})
 
@@ -283,14 +283,11 @@ def handle_submit_leave_request(ack, body, client, view):
 # Flaskエンドポイント & アプリケーション起動
 # ----------------------------------------------------
 
-# ★★★ 修正点：DockerfileのCMD命令に合わせて、gunicornが参照する変数名を `flask_app` にする ★★★
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
     return handler.handle(request)
 
 # ローカルでの開発用にSocket Modeで起動するためのコード
-# このファイルが直接実行された場合のみ、SocketModeで起動
-# gunicornで起動される本番環境では、この部分は実行されない
 if __name__ == "__main__":
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     logging.info("🤖 WorkStamper is running in Socket Mode!")
