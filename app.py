@@ -64,7 +64,7 @@ def get_freee_token(slack_user_id):
     if datetime.datetime.now() >= expiry_time:
         logging.info(f"freeeアクセストークンが期限切れです。ユーザー: {slack_user_id}")
         token_url = "https://accounts.secure.freee.co.jp/public_api/token"
-        payload = {"grant_type": "refresh_token", "client_id": FREEEE_CLIENT_ID, "client_secret": FREEEE_CLIENT_SECRET, "refresh_token": user_data['refresh_token']}
+        payload = {"grant_type": "refresh_token", "client_id": FREEEE_CLIENT_ID, "client_secret": FREEEE_CLIENT_SECRET, "refresh_token": user_data.get('refresh_token')}
         try:
             response = requests.post(token_url, data=payload)
             response.raise_for_status()
@@ -133,8 +133,10 @@ def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
         logging.error(f"freee勤怠タグ更新エラー: {e.response.text}")
         return False
 
-def get_freee_leave_types(access_token):
-    url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/work_record_templates"
+def get_freee_leave_types(employee_id, access_token):
+    """freeeから従業員が利用可能な休暇種別の一覧を取得する"""
+    # ★★★ URLを従業員エンドポイントに戻す ★★★
+    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/templates"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         response = requests.get(url, headers=headers)
@@ -221,8 +223,6 @@ def handle_clock_out_command(ack, body, client):
         client.chat_postMessage(channel=user_id, text="エラー: freeeへの打刻処理に失敗しました。")
 
 
-# ★★★ ここからが修正箇所 ★★★
-
 def open_application_modal(client, body, logger):
     """モーダルを開く実際の処理（時間のかかる処理を含む）"""
     user_id = body["user_id"]
@@ -247,19 +247,11 @@ def open_application_modal(client, body, logger):
 def handle_applications_command(ack: Ack, body: dict, client, logger):
     """/各種申請 コマンドを受け取り、重い処理を分離する"""
     user_id = body["user_id"]
-    # 認証チェックだけを先に行う
     if not pre_check_authentication(user_id, client):
         ack()
         return
-
-    # 3秒以内にack()を返す
     ack()
-    
-    # 時間のかかる処理をバックグラウンドで実行
-    # (Cloud Run環境ではスレッドの挙動が異なる場合があるため、直接呼び出す)
     open_application_modal(client, body, logger)
-
-# ★★★ ここまでが修正箇所 ★★★
 
 
 # ----------------------------------------------------
@@ -311,16 +303,20 @@ def handle_select_application_type(ack, body, client, view):
 
     if selected_type == "leave_request":
         callback_id = "submit_leave_request_view"
-        leave_types = get_freee_leave_types(access_token) # employee_idは不要
+        
+        # ★★★ employee_idを渡して関数を呼び出す ★★★
+        leave_types = get_freee_leave_types(employee_id, access_token)
+        
         if leave_types is None:
-            client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freeeから休暇種別を取得できませんでした。"}}]} )
+            # エラーの場合はユーザーに通知 (views.updateは使わない)
+            client.chat_postMessage(channel=user_id, text="エラー: freeeから休暇種別を取得できませんでした。")
             return
         
         options = [{"text": {"type": "plain_text", "text": leave["name"]}, "value": f"{leave['id']}:{leave['name']}"} for leave in leave_types]
         new_view_blocks = [{"type": "input", "block_id": "leave_type_block", "label": {"type": "plain_text", "text": "休暇種別"}, "element": {"type": "static_select", "action_id": "leave_type_select", "placeholder": {"type": "plain_text", "text": "休暇種別を選択"}, "options": options}}, {"type": "input", "block_id": "start_date_block", "label": {"type": "plain_text", "text": "開始日"}, "element": {"type": "datepicker", "action_id": "start_date_picker", "initial_date": today}}, {"type": "input", "block_id": "end_date_block", "label": {"type": "plain_text", "text": "終了日"}, "element": {"type": "datepicker", "action_id": "end_date_picker", "initial_date": today}}]
     
     else: # 未実装
-        client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "この申請はまだ実装されていません。"}}]} )
+        client.chat_postMessage(channel=user_id, text="この申請はまだ実装されていません。")
         return
 
     client.views_push(trigger_id=body["trigger_id"], view={"type": "modal", "private_metadata": json.dumps(private_metadata), "callback_id": callback_id, "title": {"type": "plain_text", "text": "申請内容の入力"}, "submit": {"type": "plain_text", "text": "申請"}, "blocks": new_view_blocks})
@@ -362,10 +358,7 @@ def oauth_callback():
     slack_user_id = request.args.get("state")
     
     token_url = "https://accounts.secure.freee.co.jp/public_api/token"
-    payload = {
-        "grant_type": "authorization_code", "client_id": FREEEE_CLIENT_ID,
-        "client_secret": FREEEE_CLIENT_SECRET, "code": code, "redirect_uri": FREEEE_REDIRECT_URI,
-    }
+    payload = {"grant_type": "authorization_code", "client_id": FREEEE_CLIENT_ID, "client_secret": FREEEE_CLIENT_SECRET, "code": code, "redirect_uri": FREEEE_REDIRECT_URI}
     response = requests.post(token_url, data=payload)
     token_data = response.json()
 
