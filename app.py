@@ -8,7 +8,7 @@ from functools import lru_cache
 from dotenv import load_dotenv
 
 # Slack
-from slack_bolt import App, Ack, Respond
+from slack_bolt import App, Ack
 from slack_bolt.adapter.flask import SlackRequestHandler
 from slack_sdk.errors import SlackApiError
 
@@ -138,7 +138,6 @@ def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
 
 @lru_cache(maxsize=1)
 def get_freee_leave_types(access_token):
-    """freeeから休暇種別の一覧を取得する (キャッシュ付き)"""
     url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/work_record_templates"
     headers = {"Authorization": f"Bearer {access_token}"}
     logging.info("freee APIから休暇種別を取得します...")
@@ -210,8 +209,7 @@ def handle_clock_in_command(ack, body, client):
     ack()
     user_id = body["user_id"]
     if not pre_check_authentication(user_id, client): return
-    # ★★★ private_metadataにユーザーIDのみ渡す ★★★
-    view_private_metadata = {"user_id": user_id} 
+    view_private_metadata = {"user_id": user_id}
     client.views_open(trigger_id=body["trigger_id"], view={"type": "modal", "private_metadata": json.dumps(view_private_metadata), "callback_id": "clock_in_modal", "title": {"type": "plain_text", "text": "出勤打刻"}, "submit": {"type": "plain_text", "text": "打刻"}, "blocks": [{"type": "input", "block_id": "location_block", "label": {"type": "plain_text", "text": "勤怠タグ"}, "element": {"type": "static_select", "action_id": "location_select", "placeholder": {"type": "plain_text", "text": "勤務形態を選択"}, "options": [{"text": {"type": "plain_text", "text": "🏠 在宅勤務"}, "value": "13548:在宅勤務"}, {"text": {"type": "plain_text", "text": "🏢 本社勤務"}, "value": "3733:本社勤務"}, {"text": {"type": "plain_text", "text": "💼 現場出社"}, "value": "3732:現場出社"}, {"text": {"type": "plain_text", "text": "✈️ 出張"}, "value": "3734:出張"}]}}]})
 
 @app.command("/退勤")
@@ -229,13 +227,12 @@ def handle_clock_out_command(ack, body, client):
     else:
         client.chat_postMessage(channel=user_id, text="エラー: freeeへの打刻処理に失敗しました。")
 
-# ★★★ /各種申請 コマンドハンドラーを修正 ★★★
+
 @app.command("/各種申請")
 def handle_applications_command(ack: Ack, body: dict, client):
     """/各種申請 コマンドを受け取り、最初のモーダル（種別選択）を素早く開く"""
     ack()
     user_id = body["user_id"]
-    # 認証チェックだけを行う
     if not pre_check_authentication(user_id, client):
         return
         
@@ -256,7 +253,6 @@ def handle_applications_command(ack: Ack, body: dict, client):
 @app.view("clock_in_modal")
 def handle_clock_in_submission(ack, body, client, view):
     ack()
-    # ★★★ private_metadata から user_id を取得 ★★★
     private_metadata = json.loads(view["private_metadata"])
     user_id = private_metadata["user_id"]
     
@@ -284,12 +280,9 @@ def handle_clock_in_submission(ack, body, client, view):
     else:
         client.chat_postMessage(channel=user_id, text="出勤打刻は完了しましたが、勤怠タグの更新に失敗しました。")
 
-# ★★★ select_application_type_view モーダルハンドラーを修正 ★★★
 @app.view("select_application_type_view")
 def handle_select_application_type(ack, body, client, view):
-    """申請種別を選択後、APIを呼び出し、専用のモーダルに切り替える"""
     ack()
-    # private_metadataからuser_idを取得
     private_metadata = json.loads(view["private_metadata"])
     user_id = private_metadata["user_id"]
     
@@ -299,20 +292,16 @@ def handle_select_application_type(ack, body, client, view):
     new_view_blocks = []
     callback_id = ""
 
-    # ここで初めてAPI呼び出しに必要な情報を取得
     access_token = get_freee_token(user_id)
     if not access_token:
-        # エラーモーダルを表示 (views.updateを使用)
         client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freeeの認証が切れています。`/連携`コマンドを再実行してください。"}}]} )
         return
         
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
     if not employee_id:
-        # エラーモーダルを表示 (views.updateを使用)
         client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freee従業員情報の取得に失敗しました。"}}]} )
         return
         
-    # private_metadataに従業員IDを追加して次のモーダルへ渡す
     private_metadata["employee_id"] = employee_id
 
     if selected_type == "leave_request":
@@ -330,7 +319,6 @@ def handle_select_application_type(ack, body, client, view):
         client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "この申請はまだ実装されていません。"}}]} )
         return
 
-    # モーダルを新しい内容で更新（積み重ねる）
     client.views_push(trigger_id=body["trigger_id"], view={"type": "modal", "private_metadata": json.dumps(private_metadata), "callback_id": callback_id, "title": {"type": "plain_text", "text": "申請内容の入力"}, "submit": {"type": "plain_text", "text": "申請"}, "blocks": new_view_blocks})
 
 @app.view("submit_leave_request_view")
