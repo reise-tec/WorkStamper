@@ -50,49 +50,21 @@ UserToken = Query()
 # 認証ヘルパー関数
 # ----------------------------------------------------
 
-def open_application_modal(client, body):
-    """モーダルを開く実際の処理"""
-    user_id = body["user_id"]
-    
-    # この関数の中で時間のかかる処理を行う
-    access_token = get_freee_token(user_id)
-    if not access_token:
-        client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
-        return
-        
-    employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
-    if not employee_id: return
-
-    view_private_metadata = {"employee_id": employee_id}
-    
-    client.views_open(
-        trigger_id=body["trigger_id"],
-        view={"type": "modal", "private_metadata": json.dumps(view_private_metadata), "callback_id": "select_application_type_view", "title": {"type": "plain_text", "text": "各種申請"}, "submit": {"type": "plain_text", "text": "次へ"}, "blocks": [{"type": "input", "block_id": "application_type_block", "label": {"type": "plain_text", "text": "申請種別"}, "element": {"type": "static_select", "action_id": "application_type_select", "placeholder": {"type": "plain_text", "text": "申請の種類を選択"}, "options": [{"text": {"type": "plain_text", "text": "有給休暇・特別休暇・欠勤"}, "value": "leave_request"}, {"text": {"type": "plain_text", "text": "勤怠時間修正"}, "value": "time_correction"}]}}]}
-    )
-
 def get_google_credentials():
-    """リフレッシュトークンを使ってGoogle APIの認証情報を生成・更新する"""
-    creds = Credentials.from_authorized_user_info(
-        info={"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "refresh_token": GOOGLE_REFRESH_TOKEN},
-        scopes=['https.googleapis.com/auth/calendar']
-    )
+    creds = Credentials.from_authorized_user_info(info={"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "refresh_token": GOOGLE_REFRESH_TOKEN}, scopes=['https://www.googleapis.com/auth/calendar'])
     if not creds.valid and creds.expired and creds.refresh_token:
         logging.info("Googleの認証情報が期限切れのため、リフレッシュします...")
         creds.refresh(Request())
     return creds
 
 def get_freee_token(slack_user_id):
-    """DBからユーザーのfreeeトークンを取得し、必要なら更新する"""
     user_data = db.get(UserToken.slack_user_id == slack_user_id)
     if not user_data: return None
     expiry_time = datetime.datetime.fromtimestamp(user_data.get('created_at', 0) + user_data.get('expires_in', 0))
     if datetime.datetime.now() >= expiry_time:
         logging.info(f"freeeアクセストークンが期限切れです。ユーザー: {slack_user_id}")
         token_url = "https://accounts.secure.freee.co.jp/public_api/token"
-        payload = {
-            "grant_type": "refresh_token", "client_id": FREEEE_CLIENT_ID,
-            "client_secret": FREEEE_CLIENT_SECRET, "refresh_token": user_data['refresh_token'],
-        }
+        payload = {"grant_type": "refresh_token", "client_id": FREEEE_CLIENT_ID, "client_secret": FREEEE_CLIENT_SECRET, "refresh_token": user_data['refresh_token']}
         try:
             response = requests.post(token_url, data=payload)
             response.raise_for_status()
@@ -106,7 +78,7 @@ def get_freee_token(slack_user_id):
         return user_data.get('access_token')
 
 # ----------------------------------------------------
-# API連携ヘルパー関数 (access_tokenを引数に取る)
+# API連携ヘルパー関数
 # ----------------------------------------------------
 
 def get_email_from_slack(user_id, client):
@@ -132,9 +104,7 @@ def get_freee_employee_id_by_email(email, access_token):
         return None
 
 def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
-    """freeeに打刻データを送信"""
     url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/time_clocks"
-    # ★★★ ここで引数のaccess_tokenを使う ★★★
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     now = datetime.datetime.now()
     data = {"company_id": int(FREEEE_COMPANY_ID), "type": clock_type, "base_date": now.strftime('%Y-%m-%d'), "datetime": now.strftime('%Y-%m-%d %H:%M:%S')}
@@ -148,29 +118,23 @@ def call_freee_time_clock(employee_id, clock_type, access_token, note=None):
         return False
 
 def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
-    """freeeの勤怠タグを更新する（公式リファレンス準拠）"""
-    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/attendance_tags/{date}"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "company_id": int(FREEEE_COMPANY_ID),
-        "employee_attendance_tags": [{"attendance_tag_id": int(tag_id), "amount": 1}]
-    }
+    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/{date}"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     try:
-        response = requests.put(url, headers=headers, json=data)
-        response.raise_for_status()
+        get_response = requests.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        get_response.raise_for_status()
+        work_record = get_response.json()
+        work_record["employee_attendance_tags"] = [{"attendance_tag_id": int(tag_id), "amount": 1}]
+        work_record["company_id"] = int(FREEEE_COMPANY_ID)
+        put_response = requests.put(url, headers=headers, json=work_record)
+        put_response.raise_for_status()
         return True
     except requests.exceptions.RequestException as e:
         logging.error(f"freee勤怠タグ更新エラー: {e.response.text}")
         return False
 
-def get_freee_leave_types(access_token): # employee_idが不要に
-    """freeeから休暇種別の一覧を取得する"""
-    # ★★★ URLを正しいエンドポイントに修正 ★★★
+def get_freee_leave_types(access_token):
     url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/work_record_templates"
-    
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         response = requests.get(url, headers=headers)
@@ -182,7 +146,6 @@ def get_freee_leave_types(access_token): # employee_idが不要に
         return None
 
 def submit_freee_leave_request(employee_id, leave_type_id, start_date, end_date, access_token):
-    """freeeに休暇申請を送信（勤務記録を更新）"""
     current_date = datetime.datetime.strptime(start_date, '%Y-%m-%d').date()
     end_date_obj = datetime.datetime.strptime(end_date, '%Y-%m-%d').date()
     while current_date <= end_date_obj:
@@ -203,7 +166,6 @@ def submit_freee_leave_request(employee_id, leave_type_id, start_date, end_date,
 # 共通ヘルパー
 # ----------------------------------------------------
 def get_employee_id_from_slack_id(user_id, client, access_token):
-    """アクセストークンを使い、SlackのユーザーIDからfreee従業員IDを取得"""
     email = get_email_from_slack(user_id, client)
     if not email:
         client.chat_postMessage(channel=user_id, text="エラー: Slackメールアドレス取得不可")
@@ -215,7 +177,6 @@ def get_employee_id_from_slack_id(user_id, client, access_token):
     return employee_id
 
 def pre_check_authentication(user_id, client):
-    """コマンド実行前にfreee認証が済んでいるかチェック"""
     if not db.contains(UserToken.slack_user_id == user_id):
         state = user_id
         auth_url = (f"https://accounts.secure.freee.co.jp/public_api/authorize"
@@ -249,25 +210,42 @@ def handle_clock_out_command(ack, body, client):
     ack()
     user_id = body["user_id"]
     if not pre_check_authentication(user_id, client): return
-    
-    # ★★★ ユーザーのアクセストークンを取得 ★★★
     access_token = get_freee_token(user_id)
     if not access_token:
         client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
         return
-        
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
-    
-    # ★★★ call_freee_time_clockに関数にaccess_tokenを渡す ★★★
     if employee_id and call_freee_time_clock(employee_id, "clock_out", access_token):
         client.chat_postMessage(channel=user_id, text="退勤打刻が完了しました。お疲れ様でした！")
     else:
         client.chat_postMessage(channel=user_id, text="エラー: freeeへの打刻処理に失敗しました。")
 
 
+# ★★★ ここからが修正箇所 ★★★
+
+def open_application_modal(client, body, logger):
+    """モーダルを開く実際の処理（時間のかかる処理を含む）"""
+    user_id = body["user_id"]
+    try:
+        access_token = get_freee_token(user_id)
+        if not access_token:
+            client.chat_postMessage(channel=user_id, text="エラー: freeeの認証が切れています。`/連携`コマンドを再実行してください。")
+            return
+            
+        employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
+        if not employee_id: return
+
+        view_private_metadata = {"employee_id": employee_id}
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view={"type": "modal", "private_metadata": json.dumps(view_private_metadata), "callback_id": "select_application_type_view", "title": {"type": "plain_text", "text": "各種申請"}, "submit": {"type": "plain_text", "text": "次へ"}, "blocks": [{"type": "input", "block_id": "application_type_block", "label": {"type": "plain_text", "text": "申請種別"}, "element": {"type": "static_select", "action_id": "application_type_select", "placeholder": {"type": "plain_text", "text": "申請の種類を選択"}, "options": [{"text": {"type": "plain_text", "text": "有給休暇・特別休暇・欠勤"}, "value": "leave_request"}, {"text": {"type": "plain_text", "text": "勤怠時間修正"}, "value": "time_correction"}]}}]}
+        )
+    except Exception as e:
+        logger.error(f"モーダル表示エラー: {e}")
+
 @app.command("/各種申請")
 def handle_applications_command(ack: Ack, body: dict, client, logger):
-    """/各種申請 コマンドを受け取り、重い処理を遅延実行する"""
+    """/各種申請 コマンドを受け取り、重い処理を分離する"""
     user_id = body["user_id"]
     # 認証チェックだけを先に行う
     if not pre_check_authentication(user_id, client):
@@ -278,10 +256,11 @@ def handle_applications_command(ack: Ack, body: dict, client, logger):
     ack()
     
     # 時間のかかる処理をバックグラウンドで実行
-    try:
-        open_application_modal(client, body)
-    except Exception as e:
-        logger.error(f"モーダルを開く際にエラーが発生しました: {e}")
+    # (Cloud Run環境ではスレッドの挙動が異なる場合があるため、直接呼び出す)
+    open_application_modal(client, body, logger)
+
+# ★★★ ここまでが修正箇所 ★★★
+
 
 # ----------------------------------------------------
 # Slackモーダルハンドラー
@@ -306,8 +285,8 @@ def handle_clock_in_submission(ack, body, client, view):
         client.chat_postMessage(channel=user_id, text="エラー: freeeへの打刻処理に失敗しました。")
         return
         
-    logging.info("freee側の処理を1秒待機します...")
-    time.sleep(1)
+    logging.info("freee側の処理を3秒待機します...")
+    time.sleep(3)
         
     today_str = datetime.date.today().isoformat()
     if update_freee_attendance_tag(employee_id, today_str, int(tag_id), access_token):
@@ -332,9 +311,9 @@ def handle_select_application_type(ack, body, client, view):
 
     if selected_type == "leave_request":
         callback_id = "submit_leave_request_view"
-        # ★★★ employee_idを渡さないように修正 ★★★
-        leave_types = get_freee_leave_types(access_token)
+        leave_types = get_freee_leave_types(access_token) # employee_idは不要
         if leave_types is None:
+            client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freeeから休暇種別を取得できませんでした。"}}]} )
             return
         
         options = [{"text": {"type": "plain_text", "text": leave["name"]}, "value": f"{leave['id']}:{leave['name']}"} for leave in leave_types]
