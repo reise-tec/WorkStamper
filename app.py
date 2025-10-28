@@ -4,10 +4,11 @@ import datetime
 import logging
 import json
 import time
+from functools import lru_cache # ★★★ キャッシュ機能のために追加 ★★★
 from dotenv import load_dotenv
 
 # Slack
-from slack_bolt import App, Ack
+from slack_bolt import App, Ack, Respond
 from slack_bolt.adapter.flask import SlackRequestHandler
 from slack_sdk.errors import SlackApiError
 
@@ -60,16 +61,20 @@ def get_google_credentials():
 def get_freee_token(slack_user_id):
     user_data = db.get(UserToken.slack_user_id == slack_user_id)
     if not user_data: return None
-    expiry_time = datetime.datetime.fromtimestamp(user_data.get('created_at', 0) + user_data.get('expires_in', 0))
+    # トークンの有効期限をチェック（例: 実際の有効期限より少し短めに設定）
+    buffer_seconds = 60 # 60秒のバッファ
+    expiry_time = datetime.datetime.fromtimestamp(user_data.get('created_at', 0) + user_data.get('expires_in', 0) - buffer_seconds)
     if datetime.datetime.now() >= expiry_time:
-        logging.info(f"freeeアクセストークンが期限切れです。ユーザー: {slack_user_id}")
+        logging.info(f"freeeアクセストークンが期限切れまたは期限間近です。ユーザー: {slack_user_id}")
         token_url = "https://accounts.secure.freee.co.jp/public_api/token"
         payload = {"grant_type": "refresh_token", "client_id": FREEEE_CLIENT_ID, "client_secret": FREEEE_CLIENT_SECRET, "refresh_token": user_data.get('refresh_token')}
         try:
             response = requests.post(token_url, data=payload)
             response.raise_for_status()
             new_token_data = response.json()
+            # created_atはUnixタイムスタンプなのでそのまま保存
             db.update(new_token_data, UserToken.slack_user_id == slack_user_id)
+            logging.info(f"freeeトークンをリフレッシュしました。ユーザー: {slack_user_id}")
             return new_token_data.get('access_token')
         except requests.exceptions.RequestException as e:
             logging.error(f"freeeトークンのリフレッシュに失敗: {e}")
@@ -133,16 +138,21 @@ def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
         logging.error(f"freee勤怠タグ更新エラー: {e.response.text}")
         return False
 
-def get_freee_leave_types(employee_id, access_token):
-    """freeeから従業員が利用可能な休暇種別の一覧を取得する"""
-    # ★★★ URLを従業員エンドポイントに戻す ★★★
-    url = f"https://api.freee.co.jp/hr/api/v1/employees/{employee_id}/work_records/templates"
+# ★★★ キャッシュデコレーターを追加 ★★★
+@lru_cache(maxsize=1)
+def get_freee_leave_types(access_token):
+    """freeeから従業員が利用可能な休暇種別の一覧を取得する (キャッシュ付き)"""
+    # ★★★ URLを会社エンドポイントに戻す ★★★
+    url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/work_record_templates"
     headers = {"Authorization": f"Bearer {access_token}"}
+    logging.info("freee APIから休暇種別を取得します...") # キャッシュされていない時だけ呼ばれる
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         templates = response.json()
-        return [{"id": t["id"], "name": t["name"]} for t in templates if t.get("category") == "leave"]
+        # ★★★ キャッシュのためタプルに変換 ★★★
+        leave_list = [{"id": t["id"], "name": t["name"]} for t in templates if t.get("category") == "leave"]
+        return tuple(sorted(leave_list, key=lambda x: x['id']))
     except requests.exceptions.RequestException as e:
         logging.error(f"freee休暇種別取得エラー: {e}")
         return None
@@ -244,15 +254,14 @@ def open_application_modal(client, body, logger):
         logger.error(f"モーダル表示エラー: {e}")
 
 @app.command("/各種申請")
-def handle_applications_command(ack: Ack, body: dict, client, logger):
-    """/各種申請 コマンドを受け取り、重い処理を分離する"""
+def handle_applications_command(ack: Ack, body: dict, client, logger, lazy):
+    """/各種申請 コマンドを受け取り、重い処理をlazy()で遅延実行する"""
     user_id = body["user_id"]
     if not pre_check_authentication(user_id, client):
         ack()
         return
     ack()
-    open_application_modal(client, body, logger)
-
+    lazy(open_application_modal)(client=client, body=body, logger=logger)
 
 # ----------------------------------------------------
 # Slackモーダルハンドラー
@@ -304,14 +313,15 @@ def handle_select_application_type(ack, body, client, view):
     if selected_type == "leave_request":
         callback_id = "submit_leave_request_view"
         
-        # ★★★ employee_idを渡して関数を呼び出す ★★★
-        leave_types = get_freee_leave_types(employee_id, access_token)
+        # ★★★ キャッシュを使うように修正（引数はaccess_tokenのみ） ★★★
+        leave_types_tuple = get_freee_leave_types(access_token)
         
-        if leave_types is None:
-            # エラーの場合はユーザーに通知 (views.updateは使わない)
+        if leave_types_tuple is None:
             client.chat_postMessage(channel=user_id, text="エラー: freeeから休暇種別を取得できませんでした。")
             return
         
+        # モーダルで使うためにリストに戻す
+        leave_types = list(leave_types_tuple)
         options = [{"text": {"type": "plain_text", "text": leave["name"]}, "value": f"{leave['id']}:{leave['name']}"} for leave in leave_types]
         new_view_blocks = [{"type": "input", "block_id": "leave_type_block", "label": {"type": "plain_text", "text": "休暇種別"}, "element": {"type": "static_select", "action_id": "leave_type_select", "placeholder": {"type": "plain_text", "text": "休暇種別を選択"}, "options": options}}, {"type": "input", "block_id": "start_date_block", "label": {"type": "plain_text", "text": "開始日"}, "element": {"type": "datepicker", "action_id": "start_date_picker", "initial_date": today}}, {"type": "input", "block_id": "end_date_block", "label": {"type": "plain_text", "text": "終了日"}, "element": {"type": "datepicker", "action_id": "end_date_picker", "initial_date": today}}]
     
