@@ -138,7 +138,6 @@ def update_freee_attendance_tag(employee_id, date, tag_id, access_token):
 
 @lru_cache(maxsize=1)
 def get_freee_leave_types(access_token):
-    """freeeから休暇種別の一覧を取得する (キャッシュ付き)"""
     url = f"https://api.freee.co.jp/hr/api/v1/companies/{FREEEE_COMPANY_ID}/work_record_templates"
     headers = {"Authorization": f"Bearer {access_token}"}
     logging.info("freee APIから休暇種別を取得します...")
@@ -235,10 +234,9 @@ def handle_applications_command(ack: Ack, body: dict, client):
     """/各種申請 コマンドを受け取り、最初のモーダル（種別選択）を素早く開く"""
     ack()
     user_id = body["user_id"]
-    if not pre_check_authentication(user_id, client):
-        return
+    # 認証チェックは後続処理に任せる
         
-    # private_metadataにユーザーIDのみを埋め込む（API呼び出しは後続処理へ）
+    # private_metadataにユーザーIDのみを埋め込む
     view_private_metadata = {"user_id": user_id} 
     try:
         client.views_open(
@@ -291,31 +289,32 @@ def handle_select_application_type(ack, body, client, view):
     private_metadata = json.loads(view["private_metadata"])
     user_id = private_metadata["user_id"]
     
-    selected_type = view["state"]["values"]["application_type_block"]["application_type_select"]["selected_option"]["value"]
-    
-    today = datetime.date.today().isoformat()
-    new_view_blocks = []
-    callback_id = ""
+    # ここで初めて認証チェックとAPI呼び出しを行う
+    if not pre_check_authentication(user_id, client):
+        # 認証NGの場合は、エラーモーダルを表示して処理終了
+        client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freeeとの連携が必要です。`/連携`コマンドを実行してください。"}}]} )
+        return
 
-    # ここで初めてAPI呼び出しに必要な情報を取得
     access_token = get_freee_token(user_id)
     if not access_token:
-        # エラーモーダルを表示 (views.updateを使用)
         client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freeeの認証が切れています。`/連携`コマンドを再実行してください。"}}]} )
         return
         
     employee_id = get_employee_id_from_slack_id(user_id, client, access_token)
     if not employee_id:
-        # エラーモーダルを表示 (views.updateを使用)
         client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freee従業員情報の取得に失敗しました。"}}]} )
         return
         
-    # private_metadataに従業員IDを追加して次のモーダルへ渡す
-    private_metadata["employee_id"] = employee_id
+    private_metadata["employee_id"] = employee_id # 次のモーダル用にIDを追加
+    
+    selected_type = view["state"]["values"]["application_type_block"]["application_type_select"]["selected_option"]["value"]
+    today = datetime.date.today().isoformat()
+    new_view_blocks = []
+    callback_id = ""
 
     if selected_type == "leave_request":
         callback_id = "submit_leave_request_view"
-        leave_types_tuple = get_freee_leave_types(access_token) # employee_id 不要
+        leave_types_tuple = get_freee_leave_types(access_token)
         if leave_types_tuple is None:
             client.views_update(view_id=body["view"]["id"], hash=body["view"]["hash"], view={"type": "modal", "title": {"type": "plain_text", "text": "エラー"}, "blocks": [{"type": "section", "text": {"type": "plain_text", "text": "freeeから休暇種別を取得できませんでした。"}}]} )
             return
